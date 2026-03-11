@@ -3,67 +3,72 @@ import java.net.*;
 import java.util.Scanner;
 
 class ChatClient {
-    private static final String SERVER_IP = "localhost";
-    private static final int TCP_PORT = 12345;
-    private static final int VOICE_PORT = 12346;
-
-    private Thread voiceSenderThread;
-    private Thread voiceReceiverThread;
-    private boolean voiceActive = false;
+    private String serverIp = "localhost";
+    private int myUdpPort;
+    private int serverUdpPort;
+    private Thread vSender, vReceiver;
+    private boolean voiceOn = false;
 
     void main() {
-        try (Socket socket = new Socket(SERVER_IP, TCP_PORT)) {
-            new Thread(new IncomingReader(socket)).start();
+        Scanner sc = new Scanner(System.in);
+        try (Socket socket = new Socket(serverIp, 12345)) {
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-            Scanner scanner = new Scanner(System.in);
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
-            System.out.println("Conectado. Escribe '/voice' para activar/desactivar audio.");
+            while (true) {
+                System.out.println("1. Login / 2. Registro");
+                String op = sc.nextLine();
+                System.out.print("User: "); String u = sc.nextLine();
+                System.out.print("Pass: "); String p = sc.nextLine();
 
-            while (scanner.hasNextLine()) {
-                String input = scanner.nextLine();
+                out.println((op.equals("2") ? "REG:" : "LOGIN:") + u + ":" + p);
+                String res = in.readLine();
 
-                if (input.equalsIgnoreCase("/voice")) {
-                    toggleVoice();
-                } else {
-                    out.println(input);
+                if (res.startsWith("AUTH_OK")) {
+                    String[] parts = res.split(":");
+                    myUdpPort = Integer.parseInt(parts[1]);
+                    serverUdpPort = Integer.parseInt(parts[2]);
+                    System.out.println("Conectado. Puerto asignado: " + myUdpPort);
+                    break;
                 }
+                System.out.println("Respuesta: " + res);
             }
-        } catch (IOException e) {
-            System.err.println("Error: " + e.getLocalizedMessage());
-        }
+
+            new Thread(new IncomingReader(in)).start();
+
+            System.out.println("Escribe '/voice' para hablar.");
+            while (sc.hasNextLine()) {
+                String txt = sc.nextLine();
+                if (txt.equalsIgnoreCase("/voice")) toggleVoice();
+                else out.println(txt);
+            }
+        } catch (IOException e) { e.printStackTrace(); }
     }
 
     private void toggleVoice() {
-        if (!voiceActive) {
-            voiceSenderThread = new Thread(new VoiceSender(SERVER_IP, VOICE_PORT));
-            voiceReceiverThread = new Thread(new VoiceReceiver(VOICE_PORT));
-            voiceSenderThread.start();
-            voiceReceiverThread.start();
-            voiceActive = true;
-            System.out.println("[Sistema] Voz activada.");
+        if (!voiceOn) {
+            vSender = new Thread(new VoiceSender(serverIp, serverUdpPort));
+            vReceiver = new Thread(new VoiceReceiver(myUdpPort));
+            vSender.start();
+            vReceiver.start();
+            voiceOn = true;
+            System.out.println("[VOZ ACTIVA]");
         } else {
-            voiceSenderThread.interrupt();
-            voiceReceiverThread.interrupt();
-            voiceActive = false;
-            System.out.println("[Sistema] Voz desactivada.");
+            vSender.interrupt(); vReceiver.interrupt();
+            voiceOn = false;
+            System.out.println("[VOZ OFF]");
         }
     }
 
     private static class IncomingReader implements Runnable {
         private final BufferedReader in;
-
-        public IncomingReader(Socket socket) throws IOException {
-            this.in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-        }
-
+        public IncomingReader(BufferedReader in) { this.in = in; }
         public void run() {
             try {
-                String message;
-                while ((message = in.readLine()) != null) {
-                    System.out.println("\n[Chat]: " + message);
-                }
+                String m;
+                while ((m = in.readLine()) != null) System.out.println("\n" + m);
             } catch (IOException e) {
-                System.out.println("Desconectado.");
+                throw new RuntimeException(e);
             }
         }
     }
