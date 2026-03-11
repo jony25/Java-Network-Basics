@@ -33,3 +33,12 @@ Para el flujo de audio se emplea **UDP (User Datagram Protocol)**, priorizando l
 1. Compilar el código fuente:
    ```bash
    javac *.java
+2. Iniciar el servidor:
+   ```bash
+   java ChatServer
+3. Iniciar instancias del cliente:
+   ```bash
+   java ChatClient
+4. Comandos disponibles en el cliente:
+   - **`/voice:`**: Activa o desactiva el flujo de audio (Full-Duplex)
+   - **`/quit:`**: Finalización del proceso y liberación de recursos de red.
