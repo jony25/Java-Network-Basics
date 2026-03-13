@@ -8,7 +8,9 @@ class ChatClient {
             window.setVisible(true);
             
             try {
-                net.connect();
+                net.connect(() -> {
+                    window.onSystemMessage("Error: No se pudo conectar al servidor.");
+                });
             } catch (Exception e) {
                 window.onSystemMessage("Error: " + e.getMessage());
             }
