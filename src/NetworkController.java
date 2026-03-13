@@ -46,6 +46,22 @@ public class NetworkController {
         out.println("JOIN_TEXT:" + server + ":" + channel);
     }
     
+    public void createServer(String name) {
+        if (out != null) out.println("CREATE_SERVER:" + name);
+    }
+    
+    public void requestJoinServer(String name) {
+        if (out != null) out.println("JOIN_SERVER:" + name);
+    }
+    
+    public void addChannel(String server, String type, String name) {
+        if (out != null) out.println("ADD_CHANNEL:" + server + ":" + type + ":" + name);
+    }
+    
+    public void getServerInfo(String name) {
+        if (out != null) out.println("GET_SERVER_INFO:" + name);
+    }
+
     public void joinVoiceChannel(String server, String channel) {
         out.println("JOIN_VOICE:" + server + ":" + channel);
         if (!voiceOn) {
@@ -89,9 +105,41 @@ public class NetworkController {
                         listener.onUserPresence(parts[2], parts[1].equals("ONLINE"));
                     }
                 } else if (res.startsWith("VOICE_PRESENCE:")) {
-                    String[] parts = res.split(":", 4);
+                    String[] parts = res.split(":");
                     if (parts.length >= 4 && listener != null) {
                         listener.onVoicePresence(parts[2], parts[3], parts[1].equals("JOIN"));
+                    }
+                } else if (res.startsWith("SERVER_LIST:")) {
+                    if (listener != null) {
+                        String[] parts = res.split(":", 2);
+                        if (parts.length >= 2 && !parts[1].isEmpty()) {
+                            listener.onServerList(java.util.Arrays.asList(parts[1].split(",")));
+                        } else {
+                            listener.onServerList(new java.util.ArrayList<>());
+                        }
+                    }
+                } else if (res.startsWith("SERVER_INFO:")) {
+                    if (listener != null) {
+                        String[] parts = res.split(":", 5);
+                        if (parts.length >= 5) {
+                            String name = parts[1];
+                            String owner = parts[2];
+                            java.util.List<String> textChannels = parts[3].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[3].split(","));
+                            java.util.List<String> voiceChannels = parts[4].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[4].split(","));
+                            listener.onServerInfo(name, owner, textChannels, voiceChannels);
+                        }
+                    }
+                } else if (res.startsWith("AVATAR:")) {
+                    if (listener != null) {
+                        String[] parts = res.split(":", 3);
+                        if (parts.length >= 3) {
+                            listener.onAvatarReceived(parts[1], parts[2]);
+                        }
+                    }
+                } else if (res.startsWith("INVITE_CODE:")) {
+                    if (listener != null) {
+                        String code = res.split(":", 2)[1];
+                        listener.onSystemMessage("INVITE_CODE:" + code);
                     }
                 } else if (res.startsWith("MSG:")) {
                     String[] parts = res.split(":", 5);
@@ -107,5 +155,21 @@ public class NetworkController {
         } catch (IOException e) {
             if (listener != null) listener.onSystemMessage("Conexión perdida: " + e.getMessage());
         }
+    }
+
+    public void uploadAvatar(String base64) {
+        if (out != null) out.println("AVATAR_UPLOAD:" + base64);
+    }
+
+    public void leaveServer(String name) {
+        if (out != null) out.println("LEAVE_SERVER:" + name);
+    }
+
+    public void generateInvite(String serverName) {
+        if (out != null) out.println("GENERATE_INVITE:" + serverName);
+    }
+
+    public void useInvite(String code) {
+        if (out != null) out.println("USE_INVITE:" + code);
     }
 }

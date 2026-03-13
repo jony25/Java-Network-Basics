@@ -6,7 +6,7 @@ import java.nio.ByteBuffer;
 class VoiceSender implements Runnable {
     private final String destIp;
     private final int port;
-    private final AudioFormat pcmFormat = new AudioFormat(8000, 16, 1, true, false);
+    private final AudioFormat pcmFormat = new AudioFormat(44100, 16, 1, true, false);
     private final AudioFormat ulawFormat = new AudioFormat(AudioFormat.Encoding.ULAW, 8000, 8, 1, 1, 8000, false);
 
     public VoiceSender(String destIp, int port) {

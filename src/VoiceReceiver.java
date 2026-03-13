@@ -5,7 +5,7 @@ import java.nio.ByteBuffer;
 
 class VoiceReceiver implements Runnable {
     private final int port;
-    private final AudioFormat pcmFormat = new AudioFormat(8000, 16, 1, true, false);
+    private final AudioFormat pcmFormat = new AudioFormat(44100, 16, 1, true, false);
     private final AudioFormat ulawFormat = new AudioFormat(AudioFormat.Encoding.ULAW, 8000, 8, 1, 1, 8000, false);
     private final JitterBuffer jitterBuffer = new JitterBuffer(1024); // Size in PCM bytes
 

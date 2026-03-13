@@ -10,10 +10,28 @@ class ChatServer {
     private static final Map<String, String> userDatabase = new ConcurrentHashMap<>();
     private static final Set<ClientHandler> clients = ConcurrentHashMap.newKeySet();
     private static final Map<String, ClientHandler> onlineUsers = new ConcurrentHashMap<>();
+    private static final Map<String, ServerProfile> serverDb = new ConcurrentHashMap<>();
+    private static final Map<String, String> avatarDb = new ConcurrentHashMap<>();
+    private static final Map<String, String> inviteDb = new ConcurrentHashMap<>(); // code -> serverName
     private static DatagramSocket udpSocket;
+
+    static class ServerProfile {
+        String name;
+        String owner;
+        Set<String> members = ConcurrentHashMap.newKeySet();
+        List<String> textChannels = new ArrayList<>();
+        List<String> voiceChannels = new ArrayList<>();
+        
+        public ServerProfile(String name, String owner) {
+            this.name = name;
+            this.owner = owner;
+        }
+    }
 
     void main() {
         loadUsers();
+        loadServers();
+        loadAvatars();
         new Thread(this::runUdpRelay).start();
 
         try (ServerSocket serverSocket = new ServerSocket(TCP_PORT)) {
@@ -69,6 +87,60 @@ class ChatServer {
                 userDatabase.put(p[0], p[1]);
             }
         } catch (IOException ignored) {}
+    }
+    
+    private synchronized void loadServers() {
+        File dir = new File("servers");
+        if (!dir.exists()) dir.mkdir();
+        File[] files = dir.listFiles((d, name) -> name.endsWith(".txt"));
+        if (files != null) {
+            for (File f : files) {
+                try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+                    String name = br.readLine();
+                    String owner = br.readLine();
+                    ServerProfile sp = new ServerProfile(name, owner);
+                    
+                    String membersLine = br.readLine();
+                    if (membersLine != null && !membersLine.isEmpty()) sp.members.addAll(Arrays.asList(membersLine.split(",")));
+                    
+                    String textLine = br.readLine();
+                    if (textLine != null && !textLine.isEmpty()) sp.textChannels.addAll(Arrays.asList(textLine.split(",")));
+                    
+                    String voiceLine = br.readLine();
+                    if (voiceLine != null && !voiceLine.isEmpty()) sp.voiceChannels.addAll(Arrays.asList(voiceLine.split(",")));
+                    
+                    serverDb.put(name, sp);
+                } catch (Exception e) {}
+            }
+        }
+        // No more hardcoded defaults — users create their own servers
+    }
+    
+    private static synchronized void saveServer(ServerProfile sp) {
+        File dir = new File("servers");
+        if (!dir.exists()) dir.mkdir();
+        File f = new File(dir, sp.name + ".txt");
+        try (PrintWriter pw = new PrintWriter(new FileWriter(f))) {
+            pw.println(sp.name);
+            pw.println(sp.owner);
+            pw.println(String.join(",", sp.members));
+            pw.println(String.join(",", sp.textChannels));
+            pw.println(String.join(",", sp.voiceChannels));
+        } catch (Exception e) {}
+    }
+
+    private synchronized void loadAvatars() {
+        File dir = new File("avatars");
+        if (!dir.exists()) dir.mkdir();
+        File[] files = dir.listFiles((d, name) -> name.endsWith(".txt"));
+        if (files != null) {
+            for (File f : files) {
+                try {
+                    String b64 = new String(java.nio.file.Files.readAllBytes(f.toPath()));
+                    avatarDb.put(f.getName().replace(".txt", ""), b64);
+                } catch (Exception e) {}
+            }
+        }
     }
 
     private static class ClientHandler implements Runnable {
@@ -155,7 +227,110 @@ class ChatServer {
                     if (this.currentVoiceChannel != null) {
                         broadcastVoicePresence("LEAVE", this.currentVoiceChannel, user);
                     }
-                    this.currentVoiceChannel = null;
+                } else if (msgString.startsWith("CREATE_SERVER:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String sName = parts[1].trim();
+                        if (!serverDb.containsKey(sName)) {
+                            ServerProfile sp = new ServerProfile(sName, user);
+                            sp.members.add(user);
+                            sp.textChannels.add("general");
+                            sp.voiceChannels.add("voz-general");
+                            serverDb.put(sName, sp);
+                            saveServer(sp);
+                            sendServerList(this, user);
+                        }
+                    }
+                } else if (msgString.startsWith("JOIN_SERVER:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String sName = parts[1].trim();
+                        ServerProfile sp = serverDb.get(sName);
+                        if (sp != null && !sp.members.contains(user)) {
+                            sp.members.add(user);
+                            saveServer(sp);
+                            sendServerList(this, user); // Update list for user
+                        }
+                    }
+                } else if (msgString.startsWith("LEAVE_SERVER:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String sName = parts[1].trim();
+                        ServerProfile sp = serverDb.get(sName);
+                        if (sp != null && sp.members.contains(user) && !sp.owner.equals(user)) {
+                            sp.members.remove(user);
+                            saveServer(sp);
+                            sendServerList(this, user);
+                        }
+                    }
+                } else if (msgString.startsWith("ADD_CHANNEL:")) {
+                    String[] parts = msgString.split(":"); // ADD_CHANNEL:server:type:name
+                    if (parts.length >= 4) {
+                        String sName = parts[1];
+                        String type = parts[2];
+                        String cName = parts[3];
+                        ServerProfile sp = serverDb.get(sName);
+                        if (sp != null && sp.owner.equals(user)) { // ONLY OWNER CAN ADD
+                            if (type.equals("TEXT")) sp.textChannels.add(cName);
+                            else if (type.equals("VOICE")) sp.voiceChannels.add(cName);
+                            saveServer(sp);
+                            // Notify everybody in this server that structure changed
+                            for (ClientHandler c : clients) {
+                                if (sp.members.contains(c.username)) {
+                                    sendServerInfo(c, sp);
+                                }
+                            }
+                        }
+                    }
+                } else if (msgString.startsWith("GET_SERVER_INFO:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        ServerProfile sp = serverDb.get(parts[1]);
+                        if (sp != null) sendServerInfo(this, sp);
+                    }
+                } else if (msgString.startsWith("AVATAR_UPLOAD:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String b64 = parts[1];
+                        avatarDb.put(user, b64);
+                        File dir = new File("avatars");
+                        if (!dir.exists()) dir.mkdir();
+                        File f = new File(dir, user + ".txt");
+                        try (PrintWriter pw = new PrintWriter(new FileWriter(f))) {
+                            pw.print(b64);
+                        } catch (Exception e) {}
+                        
+                        for (ClientHandler c : clients) {
+                            c.out.println("AVATAR:" + user + ":" + b64);
+                        }
+                    }
+                } else if (msgString.startsWith("GENERATE_INVITE:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String sName = parts[1].trim();
+                        ServerProfile sp = serverDb.get(sName);
+                        if (sp != null && sp.members.contains(user)) {
+                            String code = java.util.UUID.randomUUID().toString().substring(0, 8);
+                            inviteDb.put(code, sName);
+                            this.out.println("INVITE_CODE:" + code);
+                        }
+                    }
+                } else if (msgString.startsWith("USE_INVITE:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String code = parts[1].trim();
+                        String sName = inviteDb.get(code);
+                        if (sName != null) {
+                            ServerProfile sp = serverDb.get(sName);
+                            if (sp != null && !sp.members.contains(user)) {
+                                sp.members.add(user);
+                                saveServer(sp);
+                            }
+                            sendServerList(this, user);
+                        } else {
+                            this.out.println("SYS:Código de invitación inválido.");
+                        }
+                    }
                 } else if (msgString.startsWith("MSG:")) {
                     String[] parts = msgString.split(":", 4);
                     if (parts.length >= 4) {
@@ -176,6 +351,22 @@ class ChatServer {
             }
         }
         
+        private void sendServerList(ClientHandler target, String username) {
+            List<String> userServers = new ArrayList<>();
+            for (ServerProfile sp : serverDb.values()) {
+                if (sp.members.contains(username)) {
+                    userServers.add(sp.name);
+                }
+            }
+            target.out.println("SERVER_LIST:" + String.join(",", userServers));
+        }
+        
+        private void sendServerInfo(ClientHandler target, ServerProfile sp) {
+            String txts = String.join(",", sp.textChannels);
+            String vcs = String.join(",", sp.voiceChannels);
+            target.out.println("SERVER_INFO:" + sp.name + ":" + sp.owner + ":" + txts + ":" + vcs);
+        }
+        
         private void broadcastPresence(String status, String username) {
             for (ClientHandler c : clients) {
                 c.out.println("PRESENCE:" + status + ":" + username);
@@ -191,6 +382,12 @@ class ChatServer {
         }
         
         private void sendInitialState(ClientHandler target) {
+            sendServerList(target, target.username);
+            
+            for (Map.Entry<String, String> entry : avatarDb.entrySet()) {
+                target.out.println("AVATAR:" + entry.getKey() + ":" + entry.getValue());
+            }
+            
             for (String user : onlineUsers.keySet()) {
                 target.out.println("PRESENCE:ONLINE:" + user);
                 ClientHandler other = onlineUsers.get(user);
