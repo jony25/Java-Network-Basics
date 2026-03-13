@@ -120,13 +120,14 @@ public class NetworkController {
                     }
                 } else if (res.startsWith("SERVER_INFO:")) {
                     if (listener != null) {
-                        String[] parts = res.split(":", 5);
-                        if (parts.length >= 5) {
+                        String[] parts = res.split(":", 6);
+                        if (parts.length >= 6) {
                             String name = parts[1];
                             String owner = parts[2];
                             java.util.List<String> textChannels = parts[3].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[3].split(","));
                             java.util.List<String> voiceChannels = parts[4].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[4].split(","));
-                            listener.onServerInfo(name, owner, textChannels, voiceChannels);
+                            java.util.List<String> members = parts[5].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[5].split(","));
+                            listener.onServerInfo(name, owner, textChannels, voiceChannels, members);
                         }
                     }
                 } else if (res.startsWith("AVATAR:")) {
@@ -171,5 +172,13 @@ public class NetworkController {
 
     public void useInvite(String code) {
         if (out != null) out.println("USE_INVITE:" + code);
+    }
+
+    public void renameServer(String oldName, String newName) {
+        if (out != null) out.println("RENAME_SERVER:" + oldName + ":" + newName);
+    }
+    
+    public void deleteServer(String name) {
+        if (out != null) out.println("DELETE_SERVER:" + name);
     }
 }

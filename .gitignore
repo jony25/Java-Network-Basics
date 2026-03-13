@@ -5,6 +5,12 @@ out/
 .kotlin
 
 .idea/
+*.txt
+history/
+servers/
+auth.config
 *.class
 *.iml
 gen/
+errors.log
+cfr.jar

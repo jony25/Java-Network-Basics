@@ -5,6 +5,6 @@ public interface NetworkListener {
     void onUserPresence(String user, boolean isOnline);
     void onVoicePresence(String channel, String user, boolean joined);
     void onServerList(java.util.List<String> servers);
-    void onServerInfo(String name, String owner, java.util.List<String> textChannels, java.util.List<String> voiceChannels);
+    void onServerInfo(String name, String owner, java.util.List<String> textChannels, java.util.List<String> voiceChannels, java.util.List<String> members);
     void onAvatarReceived(String user, String base64);
 }

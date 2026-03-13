@@ -261,6 +261,77 @@ class ChatServer {
                             sp.members.remove(user);
                             saveServer(sp);
                             sendServerList(this, user);
+                            
+                            // Propagate list update so user instantly vanishes from right sidebar
+                            for (ClientHandler c : clients) {
+                                if (sp.members.contains(c.username)) {
+                                    sendServerInfo(c, sp);
+                                }
+                            }
+                        }
+                    }
+                } else if (msgString.startsWith("DELETE_SERVER:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String sName = parts[1].trim();
+                        ServerProfile sp = serverDb.get(sName);
+                        if (sp != null && sp.owner.equals(user)) {
+                            // Notify all members first before deleting
+                            for (ClientHandler c : clients) {
+                                if (sp.members.contains(c.username)) {
+                                    sp.members.remove(c.username);
+                                    sendServerList(c, c.username);
+                                }
+                            }
+                            
+                            serverDb.remove(sName);
+                            File oldFile = new File("servers", sName + ".txt");
+                            if (oldFile.exists()) oldFile.delete();
+                            
+                            File histDir = new File("history");
+                            if (histDir.exists()) {
+                                File[] histFiles = histDir.listFiles((d, n) -> n.startsWith("sv_" + sName + "_ch_"));
+                                if (histFiles != null) {
+                                    for (File h : histFiles) h.delete();
+                                }
+                            }
+                        }
+                    }
+                } else if (msgString.startsWith("RENAME_SERVER:")) {
+                    String[] parts = msgString.split(":", 3);
+                    if (parts.length >= 3) {
+                        String oldName = parts[1].trim();
+                        String newName = parts[2].trim();
+                        ServerProfile sp = serverDb.get(oldName);
+                        if (sp != null && sp.owner.equals(user) && !serverDb.containsKey(newName)) {
+                            // Rename logic
+                            serverDb.remove(oldName);
+                            sp.name = newName;
+                            serverDb.put(newName, sp);
+                            
+                            // Rename file on disk
+                            File oldFile = new File("servers", oldName + ".txt");
+                            if (oldFile.exists()) oldFile.delete();
+                            saveServer(sp);
+                            
+                            // Rename history files
+                            File histDir = new File("history");
+                            if (histDir.exists()) {
+                                File[] histFiles = histDir.listFiles((d, n) -> n.startsWith("sv_" + oldName + "_ch_"));
+                                if (histFiles != null) {
+                                    for (File h : histFiles) {
+                                        String newHistName = h.getName().replaceFirst("sv_" + oldName + "_ch_", "sv_" + newName + "_ch_");
+                                        h.renameTo(new File(histDir, newHistName));
+                                    }
+                                }
+                            }
+                            
+                            // Notify members
+                            for (ClientHandler c : clients) {
+                                if (sp.members.contains(c.username)) {
+                                    sendServerList(c, c.username);
+                                }
+                            }
                         }
                     }
                 } else if (msgString.startsWith("ADD_CHANNEL:")) {
@@ -364,7 +435,7 @@ class ChatServer {
         private void sendServerInfo(ClientHandler target, ServerProfile sp) {
             String txts = String.join(",", sp.textChannels);
             String vcs = String.join(",", sp.voiceChannels);
-            target.out.println("SERVER_INFO:" + sp.name + ":" + sp.owner + ":" + txts + ":" + vcs);
+            target.out.println("SERVER_INFO:" + sp.name + ":" + sp.owner + ":" + txts + ":" + vcs + ":" + String.join(",", sp.members));
         }
         
         private void broadcastPresence(String status, String username) {
