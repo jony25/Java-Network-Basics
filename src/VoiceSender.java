@@ -1,5 +1,6 @@
 import javax.sound.sampled.*;
 import java.net.*;
+import java.nio.ByteBuffer;
 
 class VoiceSender implements Runnable {
     private final String destIp;
@@ -18,18 +19,26 @@ class VoiceSender implements Runnable {
 
             line.open(format);
             line.start();
-            byte[] buffer = new byte[1024];
+            
+            byte[] audioBuffer = new byte[1024];
+            ByteBuffer packetBuffer = ByteBuffer.allocate(8 + audioBuffer.length);
             InetAddress address = InetAddress.getByName(destIp);
+            long seq = 0;
 
             while (!Thread.currentThread().isInterrupted()) {
-                int count = line.read(buffer, 0, buffer.length);
+                int count = line.read(audioBuffer, 0, audioBuffer.length);
                 if (count > 0) {
-                    DatagramPacket packet = new DatagramPacket(buffer, count, address, port);
+                    packetBuffer.clear();
+                    packetBuffer.putLong(seq++);
+                    packetBuffer.put(audioBuffer, 0, count);
+                    
+                    DatagramPacket packet = new DatagramPacket(
+                        packetBuffer.array(), 8 + count, address, port);
                     socket.send(packet);
                 }
             }
         } catch (Exception e) {
-            System.err.println("Error en el emisor de voz: " + e.getLocalizedMessage());
+            System.err.println("Error Sender: " + e.getMessage());
         }
     }
 }

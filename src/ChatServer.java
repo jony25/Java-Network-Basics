@@ -8,7 +8,7 @@ class ChatServer {
     private static final int UDP_SERVER_PORT = 12346;
     private static final String USER_FILE = "users.txt";
     private static final Map<String, String> userDatabase = new ConcurrentHashMap<>();
-    private static final Set<ClientHandler> clients = Collections.synchronizedSet(new HashSet<>());
+    private static final Set<ClientHandler> clients = ConcurrentHashMap.newKeySet();
     private static DatagramSocket udpSocket;
 
     void main() {
@@ -18,7 +18,8 @@ class ChatServer {
         try (ServerSocket serverSocket = new ServerSocket(TCP_PORT)) {
             System.out.println("Servidor iniciado. TCP: " + TCP_PORT + ", UDP Relay: " + UDP_SERVER_PORT);
             while (true) {
-                new ClientHandler(serverSocket.accept()).start();
+                Socket socket = serverSocket.accept();
+                Thread.ofVirtual().start(new ClientHandler(socket));
             }
         } catch (IOException e) {
             System.err.println("Error TCP: " + e.getMessage());
@@ -33,14 +34,11 @@ class ChatServer {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                 udpSocket.receive(packet);
 
-                synchronized (clients) {
-                    for (ClientHandler client : clients) {
-                        // No reenviar al emisor original
-                        if (client.udpPort != packet.getPort() || !client.ip.equals(packet.getAddress())) {
-                            DatagramPacket forward = new DatagramPacket(
-                                    packet.getData(), packet.getLength(), client.ip, client.udpPort);
-                            udpSocket.send(forward);
-                        }
+                for (ClientHandler client : clients) {
+                    if (client.udpPort != packet.getPort() || !client.ip.equals(packet.getAddress())) {
+                        DatagramPacket forward = new DatagramPacket(
+                                packet.getData(), packet.getLength(), client.ip, client.udpPort);
+                        udpSocket.send(forward);
                     }
                 }
             }
@@ -57,7 +55,7 @@ class ChatServer {
         } catch (IOException ignored) {}
     }
 
-    private static class ClientHandler extends Thread {
+    private static class ClientHandler implements Runnable {
         private final Socket socket;
         private PrintWriter out;
         protected InetAddress ip;
@@ -100,9 +98,7 @@ class ChatServer {
         private void handleChat(BufferedReader in, String user) throws IOException {
             String msg;
             while ((msg = in.readLine()) != null) {
-                synchronized (clients) {
-                    for (ClientHandler c : clients) c.out.println(user + ": " + msg);
-                }
+                for (ClientHandler c : clients) c.out.println(user + ": " + msg);
             }
         }
     }
