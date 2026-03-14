@@ -14,9 +14,7 @@ import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GridBagLayout;
-import java.awt.GridLayout;
 import java.awt.Image;
-import java.awt.Insets;
 import java.awt.Point;
 import java.awt.RenderingHints;
 import java.awt.event.ActionEvent;
@@ -35,11 +33,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.imageio.ImageIO;
-import javax.swing.AbstractButton;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
@@ -87,9 +83,11 @@ implements NetworkListener {
     private final Color BLURPLE = new Color(88, 101, 242);
     private final Color GREEN = new Color(67, 181, 129);
     private final DefaultListModel<String> onlineUsersModel = new DefaultListModel();
-    private final DefaultListModel<String> voiceUsersModel = new DefaultListModel();
+    private final Map<String, DefaultListModel<String>> voiceUsersMap = new ConcurrentHashMap<>();
     private JList<String> listOnlineUsers;
-    private JPanel voiceUsersPanel;
+    private final Map<String, JPanel> voiceUsersPanels = new ConcurrentHashMap<>();
+    private final Map<String, JButton> voiceChannelBtns = new ConcurrentHashMap<>();
+    private final Map<String, Integer> currentVoiceLimits = new ConcurrentHashMap<>();
     private Point initialClick;
     private String currentServer = "Servidor UPV";
     private String currentTextChannel = "general";
@@ -100,6 +98,10 @@ implements NetworkListener {
     private String currentServerOwner = "";
     private List<String> currentServerMembers = new java.util.ArrayList<>();
     private final Map<String, Image> customAvatars = new ConcurrentHashMap<String, Image>();
+    private String myStatus = "ONLINE";
+    private boolean isManualStatus = false;
+    private final Map<String, String> userStatuses = new ConcurrentHashMap<>();
+    private final Map<String, String> userBios = new ConcurrentHashMap<>();
 
     public ChatWindow(NetworkController networkController) {
         this.net = networkController;
@@ -123,6 +125,24 @@ implements NetworkListener {
         jPanel.add((Component)this.mainPanel, "Center");
         this.add(jPanel);
         this.setLocationRelativeTo(null);
+        
+        long[] lastActivity = {System.currentTimeMillis()};
+        java.awt.Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
+            lastActivity[0] = System.currentTimeMillis();
+            // Only auto-revert from IDLE if it was set automatically (not manually)
+            if ("IDLE".equals(myStatus) && !isManualStatus) {
+                myStatus = "ONLINE";
+                net.setStatus("ONLINE");
+            }
+        }, java.awt.AWTEvent.MOUSE_EVENT_MASK | java.awt.AWTEvent.KEY_EVENT_MASK);
+        
+        new javax.swing.Timer(60000, e -> {
+            // Only auto-set IDLE if status is ONLINE and not manually overridden
+            if ("ONLINE".equals(myStatus) && !isManualStatus && System.currentTimeMillis() - lastActivity[0] > 15 * 60 * 1000) {
+                myStatus = "IDLE";
+                net.setStatus("IDLE");
+            }
+        }).start();
     }
 
     private JPanel buildTitleBar() {
@@ -323,11 +343,6 @@ implements NetworkListener {
         this.channelsPanel.setLayout(new BoxLayout(this.channelsPanel, 1));
         this.channelsPanel.setBackground(this.BG_DARKER);
         this.channelsPanel.setBorder(new EmptyBorder(15, 10, 10, 10));
-        this.voiceUsersPanel = new JPanel();
-        this.voiceUsersPanel.setLayout(new BoxLayout(this.voiceUsersPanel, 1));
-        this.voiceUsersPanel.setBackground(this.BG_DARKER);
-        this.voiceUsersPanel.setBorder(new EmptyBorder(0, 20, 0, 0));
-        this.voiceUsersPanel.setAlignmentX(0.0f);
         jPanel2.add((Component)this.channelsPanel, "Center");
         JPanel jPanel3 = new JPanel();
         jPanel3.setLayout(new BoxLayout(jPanel3, 1));
@@ -355,10 +370,27 @@ implements NetworkListener {
                 super.paintComponent(graphics);
                 String string = ChatWindow.this.userField.getText();
                 String string2 = string == null || string.isEmpty() ? "?" : string.substring(0, 1).toUpperCase();
-                new AvatarIcon(string == null ? "" : string, string2, ChatWindow.this.BLURPLE).paintIcon(this, graphics, 2, 2);
+                Color statusColor = myStatus.equals("ONLINE") ? GREEN : (myStatus.equals("IDLE") ? new Color(250, 166, 26) : new Color(237, 66, 69));
+                new AvatarIcon(string == null ? "" : string, string2, ChatWindow.this.BLURPLE, statusColor).paintIcon(this, graphics, 2, 2);
             }
         };
         jLabel.setPreferredSize(new Dimension(36, 36));
+        jLabel.setCursor(new Cursor(12));
+        jLabel.addMouseListener(new MouseAdapter(){
+            @Override
+            public void mousePressed(MouseEvent e) {
+                JPopupMenu statusMenu = new JPopupMenu();
+                statusMenu.setBackground(new Color(24, 25, 28));
+                JMenuItem itemOnline = createMenuItem("Conectado", GREEN);
+                itemOnline.addActionListener(ev -> { myStatus = "ONLINE"; isManualStatus = false; net.setStatus("ONLINE"); jPanel4.repaint(); });
+                JMenuItem itemIdle = createMenuItem("Ausente", new Color(250, 166, 26));
+                itemIdle.addActionListener(ev -> { myStatus = "IDLE"; isManualStatus = true; net.setStatus("IDLE"); jPanel4.repaint(); });
+                JMenuItem itemDnd = createMenuItem("No molestar", new Color(237, 66, 69));
+                itemDnd.addActionListener(ev -> { myStatus = "DND"; isManualStatus = true; net.setStatus("DND"); jPanel4.repaint(); });
+                statusMenu.add(itemOnline); statusMenu.add(itemIdle); statusMenu.add(itemDnd);
+                statusMenu.show(jLabel, e.getX(), e.getY());
+            }
+        });
         jPanel4.add((Component)jLabel, "West");
         JLabel jLabel2 = new JLabel();
         jLabel2.setName("bottomUserName");
@@ -472,7 +504,17 @@ implements NetworkListener {
                 } else {
                     jLabel.setForeground(ChatWindow.this.TEXT_NORMAL);
                 }
-                jLabel.setIcon(new AvatarIcon(string, string2, color));
+                
+                // Use real status from userStatuses map for the status indicator
+                String userStatus = ChatWindow.this.userStatuses.getOrDefault(string, "OFFLINE");
+                Color statusColor;
+                switch (userStatus) {
+                    case "ONLINE": statusColor = ChatWindow.this.GREEN; break;
+                    case "IDLE": statusColor = new Color(250, 166, 26); break;
+                    case "DND": statusColor = new Color(237, 66, 69); break;
+                    default: statusColor = Color.GRAY; break;
+                }
+                jLabel.setIcon(new AvatarIcon(string, string2, color, statusColor));
                 jLabel.setBorder(new EmptyBorder(4, 4, 4, 4));
                 jLabel.setIconTextGap(10);
                 return jLabel;
@@ -502,7 +544,7 @@ implements NetworkListener {
                     jPopupMenu.setBackground(new Color(24, 25, 28));
                     jPopupMenu.setBorder(BorderFactory.createLineBorder(new Color(40, 42, 46), 1));
                     JMenuItem jMenuItem = ChatWindow.this.createMenuItem("Ver Perfil de " + string, Color.WHITE);
-                    jMenuItem.addActionListener(actionEvent -> JOptionPane.showMessageDialog(ChatWindow.this, "Perfil de: " + string + "\n(Desarrollo futuro)", "Perfil", 1));
+                    jMenuItem.addActionListener(actionEvent -> showUserProfileDialog(string));
                     jPopupMenu.add(jMenuItem);
                     if (ChatWindow.this.currentServerOwner.equals(ChatWindow.this.userField.getText()) && !string.equals(ChatWindow.this.userField.getText())) {
                         jPopupMenu.addSeparator();
@@ -720,11 +762,82 @@ implements NetworkListener {
         return jMenuItem;
     }
 
+    private String renderEmojis(String text) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<html><body style='margin:0;padding:0;'>");
+        int i = 0;
+        boolean hasEmoji = false;
+        while (i < text.length()) {
+            int cp = text.codePointAt(i);
+            int charCount = Character.charCount(cp);
+            if (isEmoji(cp)) {
+                hasEmoji = true;
+                StringBuilder hex = new StringBuilder();
+                hex.append(String.format("%x", cp));
+                // Check for variation selector or ZWJ sequences
+                int next = i + charCount;
+                while (next < text.length()) {
+                    int nextCp = text.codePointAt(next);
+                    if (nextCp == 0xFE0F || nextCp == 0x200D || isEmoji(nextCp)) {
+                        if (nextCp != 0xFE0F) { // skip variation selector in URL
+                            hex.append("-").append(String.format("%x", nextCp));
+                        }
+                        next += Character.charCount(nextCp);
+                    } else {
+                        break;
+                    }
+                }
+                String url = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/" + hex + ".png";
+                sb.append("<img src='").append(url).append("' width='20' height='20'>");
+                i = next;
+            } else {
+                // Escape HTML special chars
+                char ch = (char)cp;
+                if (ch == '<') sb.append("&lt;");
+                else if (ch == '>') sb.append("&gt;");
+                else if (ch == '&') sb.append("&amp;");
+                else sb.append(ch);
+                i += charCount;
+            }
+        }
+        sb.append("</body></html>");
+        return hasEmoji ? sb.toString() : text;
+    }
+    
+    private boolean isEmoji(int cp) {
+        if (cp >= 0x1F600 && cp <= 0x1F64F) return true; // Emoticons
+        if (cp >= 0x1F300 && cp <= 0x1F5FF) return true; // Misc Symbols and Pictographs
+        if (cp >= 0x1F680 && cp <= 0x1F6FF) return true; // Transport and Map
+        if (cp >= 0x1F1E0 && cp <= 0x1F1FF) return true; // Flags
+        if (cp >= 0x2600 && cp <= 0x26FF) return true;   // Misc symbols
+        if (cp >= 0x2700 && cp <= 0x27BF) return true;   // Dingbats
+        if (cp >= 0xFE00 && cp <= 0xFE0F) return true;   // Variation Selectors
+        if (cp >= 0x1F900 && cp <= 0x1F9FF) return true; // Supplemental Symbols
+        if (cp >= 0x1FA00 && cp <= 0x1FA6F) return true; // Chess Symbols
+        if (cp >= 0x1FA70 && cp <= 0x1FAFF) return true; // Symbols Extended-A
+        if (cp >= 0x231A && cp <= 0x231B) return true;
+        if (cp == 0x200D) return true; // ZWJ
+        if (cp >= 0x2300 && cp <= 0x23FF) return true;
+        if (cp >= 0x2B05 && cp <= 0x2B07) return true;
+        if (cp == 0x2B1B || cp == 0x2B1C || cp == 0x2B50 || cp == 0x2B55) return true;
+        if (cp >= 0x2934 && cp <= 0x2935) return true;
+        if (cp >= 0x25AA && cp <= 0x25AB) return true;
+        if (cp >= 0x25FB && cp <= 0x25FE) return true;
+        if (cp == 0x2139 || cp == 0x2194 || cp == 0x2195 || cp == 0x2196) return true;
+        if (cp >= 0x2197 && cp <= 0x2199) return true;
+        if (cp == 0x21A9 || cp == 0x21AA) return true;
+        if (cp == 0x23CF || cp == 0x23E9 || cp == 0x23EA || cp == 0x23EB || cp == 0x23EC) return true;
+        if (cp == 0x23ED || cp == 0x23EE || cp == 0x23EF || cp == 0x23F0 || cp == 0x23F1) return true;
+        if (cp == 0x23F2 || cp == 0x23F3 || cp == 0x23F8 || cp == 0x23F9 || cp == 0x23FA) return true;
+        if (cp >= 0xE0020 && cp <= 0xE007F) return true; // Tags
+        return false;
+    }
+
     private void appendText(String string, Color color, boolean bl) {
         try {
             StyleContext styleContext = StyleContext.getDefaultStyleContext();
             AttributeSet attributeSet = styleContext.addAttribute(SimpleAttributeSet.EMPTY, StyleConstants.Foreground, color);
-            attributeSet = styleContext.addAttribute(attributeSet, StyleConstants.FontFamily, "Segoe UI");
+            attributeSet = styleContext.addAttribute(attributeSet, StyleConstants.FontFamily, "Segoe UI Emoji");
             attributeSet = styleContext.addAttribute(attributeSet, StyleConstants.Alignment, 3);
             attributeSet = styleContext.addAttribute(attributeSet, StyleConstants.Bold, bl);
             int n = this.chatArea.getDocument().getLength();
@@ -746,7 +859,7 @@ implements NetworkListener {
                 JPanel jPanel = new JPanel(new BorderLayout(10, 0));
                 jPanel.setBackground(this.BG_DARK);
                 jPanel.setBorder(new EmptyBorder(6, 10, 6, 10));
-                JLabel jLabel = new JLabel(new AvatarIcon(string, string3, color));
+                JLabel jLabel = new JLabel(new AvatarIcon(string, string3, color, null));
                 jLabel.setVerticalAlignment(1);
                 jLabel.setPreferredSize(new Dimension(40, 40));
                 jLabel.setBorder(new EmptyBorder(2, 0, 0, 0));
@@ -769,7 +882,7 @@ implements NetworkListener {
                 jPanel3.add(jLabel3);
                 jPanel3.add(Box.createHorizontalGlue());
                 jPanel2.add(jPanel3);
-                JLabel jLabel4 = new JLabel(string2);
+                JLabel jLabel4 = new JLabel(renderEmojis(string2));
                 jLabel4.setAlignmentX(0.0f);
                 jLabel4.setForeground(this.TEXT_NORMAL);
                 jLabel4.setFont(new Font("Segoe UI", 0, 14));
@@ -821,14 +934,17 @@ implements NetworkListener {
     }
 
     @Override
-    public void onUserPresence(String string, boolean bl) {
+    public void onUserPresence(String string, String status) {
         SwingUtilities.invokeLater(() -> {
-            if (bl) {
+            userStatuses.put(string, status);
+            boolean isOnline = !status.equals("OFFLINE");
+            if (isOnline) {
                 if (!this.onlineUsersModel.contains(string)) {
                     this.onlineUsersModel.addElement(string);
                 }
             } else {
                 this.onlineUsersModel.removeElement(string);
+                userStatuses.remove(string);
             }
             updateOnlineUsersList();
         });
@@ -866,36 +982,55 @@ implements NetworkListener {
     }
 
     @Override
-    public void onVoicePresence(String string, String string2, boolean bl) {
+    public void onVoicePresence(String channel, String username, boolean joining) {
         SwingUtilities.invokeLater(() -> {
-            if (bl) {
-                if (!this.voiceUsersModel.contains(string2)) {
-                    this.voiceUsersModel.addElement(string2);
+            voiceUsersMap.putIfAbsent(channel, new DefaultListModel<>());
+            DefaultListModel<String> model = voiceUsersMap.get(channel);
+            if (joining) {
+                if (!model.contains(username)) {
+                    model.addElement(username);
+                    if (!username.equals(this.userField.getText())) this.playSound("join");
                 }
             } else {
-                this.voiceUsersModel.removeElement(string2);
+                model.removeElement(username);
+                if (!username.equals(this.userField.getText())) this.playSound("leave");
             }
-            this.refreshVoiceUsersUI();
+            this.refreshVoiceUsersUI(channel);
         });
     }
 
-    private void refreshVoiceUsersUI() {
-        this.voiceUsersPanel.removeAll();
-        for (int i = 0; i < this.voiceUsersModel.size(); ++i) {
-            String string = this.voiceUsersModel.get(i);
-            JLabel jLabel = new JLabel(string);
-            String string2 = string.isEmpty() ? "?" : string.substring(0, 1).toUpperCase();
-            Color color = string.equals(this.userField.getText()) ? this.BLURPLE : new Color(67, 181, 129);
-            jLabel.setIcon(new AvatarIcon(string, string2, color));
-            jLabel.setIconTextGap(8);
-            jLabel.setForeground(this.TEXT_NORMAL);
-            jLabel.setFont(new Font("Segoe UI", 0, 12));
-            jLabel.setBorder(new EmptyBorder(2, 20, 2, 0));
-            this.voiceUsersPanel.add(jLabel);
-            this.voiceUsersPanel.add(Box.createVerticalStrut(4));
+    private void refreshVoiceUsersUI(String channel) {
+        JPanel panel = voiceUsersPanels.get(channel);
+        if (panel == null) return;
+        panel.removeAll();
+        DefaultListModel<String> model = voiceUsersMap.get(channel);
+        int currentUse = model != null ? model.size() : 0;
+        
+        if (model != null) {
+            for (int i = 0; i < model.size(); ++i) {
+                String u = model.get(i);
+                JLabel jLabel = new JLabel(u);
+                String u2 = u.isEmpty() ? "?" : u.substring(0, 1).toUpperCase();
+                Color color = u.equals(this.userField.getText()) ? this.BLURPLE : new Color(67, 181, 129);
+                jLabel.setIcon(new AvatarIcon(u, u2, color, GREEN)); // TO DO: Real status color
+                jLabel.setIconTextGap(8);
+                jLabel.setForeground(this.TEXT_NORMAL);
+                jLabel.setFont(new Font("Segoe UI", 0, 12));
+                jLabel.setBorder(new EmptyBorder(2, 20, 2, 0));
+                panel.add(jLabel);
+                panel.add(Box.createVerticalStrut(4));
+            }
         }
-        this.voiceUsersPanel.revalidate();
-        this.voiceUsersPanel.repaint();
+        
+        JButton btn = voiceChannelBtns.get(channel);
+        if (btn != null) {
+            int limit = currentVoiceLimits.getOrDefault(channel, 0);
+            String display = limit > 0 ? "[Voz] " + channel + " (" + currentUse + "/" + limit + ")" : "[Voz] " + channel;
+            btn.setText(display);
+        }
+        
+        panel.revalidate();
+        panel.repaint();
     }
 
     @Override
@@ -907,13 +1042,244 @@ implements NetworkListener {
                 if (bufferedImage != null) {
                     this.customAvatars.put(string, bufferedImage.getScaledInstance(36, 36, 4));
                     this.listOnlineUsers.repaint();
-                    this.voiceUsersPanel.repaint();
+                    for (JPanel p : this.voiceUsersPanels.values()) {
+                        p.repaint();
+                    }
                 }
             }
             catch (Exception exception) {
                 exception.printStackTrace();
             }
         });
+    }
+
+    @Override
+    public void onBioReceived(String user, String bio) {
+        SwingUtilities.invokeLater(() -> {
+            userBios.put(user, bio);
+        });
+    }
+
+    private void showUserProfileDialog(String username) {
+        JDialog dialog = new JDialog(this, "Perfil de " + username, true);
+        dialog.setSize(340, 350);
+        dialog.setLocationRelativeTo(this);
+        dialog.setUndecorated(true);
+        
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, 1));
+        panel.setBackground(BG_DARK);
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(BG_DARKEST, 2),
+            new EmptyBorder(20, 20, 20, 20)
+        ));
+        
+        // Close button
+        JPanel topBar = new JPanel(new BorderLayout());
+        topBar.setBackground(BG_DARK);
+        topBar.setAlignmentX(0.5f);
+        JButton closeBtn = createTitleBtn("X");
+        closeBtn.addActionListener(e -> dialog.dispose());
+        topBar.add(closeBtn, "East");
+        panel.add(topBar);
+        
+        // Avatar
+        String initial = username.isEmpty() ? "?" : username.substring(0, 1).toUpperCase();
+        Color avatarColor = username.equals(this.userField.getText()) ? BLURPLE : new Color(67, 181, 129);
+        String status = userStatuses.getOrDefault(username, "OFFLINE");
+        Color statusColor;
+        switch (status) {
+            case "ONLINE": statusColor = GREEN; break;
+            case "IDLE": statusColor = new Color(250, 166, 26); break;
+            case "DND": statusColor = new Color(237, 66, 69); break;
+            default: statusColor = Color.GRAY; break;
+        }
+        JLabel avatarLabel = new JLabel(new AvatarIcon(username, initial, avatarColor, statusColor));
+        avatarLabel.setAlignmentX(0.5f);
+        panel.add(avatarLabel);
+        panel.add(Box.createVerticalStrut(12));
+        
+        // Username
+        JLabel nameLabel = new JLabel(username);
+        nameLabel.setForeground(Color.WHITE);
+        nameLabel.setFont(new Font("Segoe UI", 1, 18));
+        nameLabel.setAlignmentX(0.5f);
+        panel.add(nameLabel);
+        
+        // Status text
+        String statusText;
+        switch (status) {
+            case "ONLINE": statusText = "\u25cf Conectado"; break;
+            case "IDLE": statusText = "\u25cf Ausente"; break;
+            case "DND": statusText = "\u25cf No molestar"; break;
+            default: statusText = "\u25cf Desconectado"; break;
+        }
+        JLabel statusLabel = new JLabel(statusText);
+        statusLabel.setForeground(statusColor);
+        statusLabel.setFont(new Font("Segoe UI", 0, 13));
+        statusLabel.setAlignmentX(0.5f);
+        panel.add(statusLabel);
+        panel.add(Box.createVerticalStrut(15));
+        
+        // Separator
+        JPanel sep = new JPanel();
+        sep.setBackground(BG_DARKEST);
+        sep.setMaximumSize(new Dimension(280, 1));
+        sep.setAlignmentX(0.5f);
+        panel.add(sep);
+        panel.add(Box.createVerticalStrut(15));
+        
+        // Bio
+        JLabel bioTitle = new JLabel("SOBRE M\u00cd");
+        bioTitle.setForeground(new Color(142, 146, 151));
+        bioTitle.setFont(new Font("Segoe UI", 1, 12));
+        bioTitle.setAlignmentX(0.5f);
+        panel.add(bioTitle);
+        panel.add(Box.createVerticalStrut(5));
+        
+        String bio = userBios.getOrDefault(username, "Sin descripci\u00f3n.");
+        JLabel bioLabel = new JLabel("<html><div style='text-align:center;width:260px'>" + bio + "</div></html>");
+        bioLabel.setForeground(TEXT_NORMAL);
+        bioLabel.setFont(new Font("Segoe UI", 0, 13));
+        bioLabel.setAlignmentX(0.5f);
+        panel.add(bioLabel);
+        
+        // Admin badge
+        if (currentServerOwner.equals(username)) {
+            panel.add(Box.createVerticalStrut(10));
+            JLabel adminLabel = new JLabel("\u2605 Administrador del Servidor");
+            adminLabel.setForeground(new Color(250, 166, 26));
+            adminLabel.setFont(new Font("Segoe UI", 1, 12));
+            adminLabel.setAlignmentX(0.5f);
+            panel.add(adminLabel);
+        }
+        
+        dialog.add(panel);
+        dialog.setVisible(true);
+    }
+
+    private void showServerInfoDialog(String serverName, String owner, List<String> members) {
+        JDialog dialog = new JDialog(this, "Información del Servidor", true);
+        dialog.setSize(380, 400);
+        dialog.setLocationRelativeTo(this);
+        dialog.setUndecorated(true);
+        
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, 1));
+        panel.setBackground(BG_DARK);
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(BG_DARKEST, 2),
+            new EmptyBorder(20, 20, 20, 20)
+        ));
+        
+        // Top bar with close button
+        JPanel topBar = new JPanel(new BorderLayout());
+        topBar.setBackground(BG_DARK);
+        topBar.setAlignmentX(0.5f);
+        JLabel titleLbl = new JLabel("Información del Servidor");
+        titleLbl.setForeground(Color.WHITE);
+        titleLbl.setFont(new Font("Segoe UI", 1, 14));
+        topBar.add(titleLbl, "West");
+        JButton closeBtn = createTitleBtn("X");
+        closeBtn.addActionListener(e -> dialog.dispose());
+        topBar.add(closeBtn, "East");
+        panel.add(topBar);
+        panel.add(Box.createVerticalStrut(15));
+        
+        // Server icon (using first letter)
+        String initial = serverName.isEmpty() ? "?" : serverName.substring(0, 1).toUpperCase();
+        JLabel iconLabel = new JLabel(initial);
+        iconLabel.setForeground(Color.WHITE);
+        iconLabel.setFont(new Font("Segoe UI", 1, 28));
+        iconLabel.setHorizontalAlignment(0);
+        iconLabel.setPreferredSize(new Dimension(64, 64));
+        iconLabel.setMaximumSize(new Dimension(64, 64));
+        iconLabel.setOpaque(true);
+        iconLabel.setBackground(BLURPLE);
+        iconLabel.setAlignmentX(0.5f);
+        panel.add(iconLabel);
+        panel.add(Box.createVerticalStrut(12));
+        
+        // Server name
+        JLabel nameLabel = new JLabel(serverName);
+        nameLabel.setForeground(Color.WHITE);
+        nameLabel.setFont(new Font("Segoe UI", 1, 20));
+        nameLabel.setAlignmentX(0.5f);
+        panel.add(nameLabel);
+        panel.add(Box.createVerticalStrut(8));
+        
+        // Separator
+        JPanel sep = new JPanel();
+        sep.setBackground(BG_DARKEST);
+        sep.setMaximumSize(new Dimension(340, 1));
+        sep.setAlignmentX(0.5f);
+        panel.add(sep);
+        panel.add(Box.createVerticalStrut(12));
+        
+        // Info items
+        JLabel ownerLabel = new JLabel("\u2605 Propietario: " + owner);
+        ownerLabel.setForeground(new Color(250, 166, 26));
+        ownerLabel.setFont(new Font("Segoe UI", 0, 14));
+        ownerLabel.setAlignmentX(0.5f);
+        panel.add(ownerLabel);
+        panel.add(Box.createVerticalStrut(8));
+        
+        JLabel membersLabel = new JLabel("\u25cf Miembros: " + members.size());
+        membersLabel.setForeground(TEXT_NORMAL);
+        membersLabel.setFont(new Font("Segoe UI", 0, 14));
+        membersLabel.setAlignmentX(0.5f);
+        panel.add(membersLabel);
+        panel.add(Box.createVerticalStrut(8));
+        
+        long onlineCount = members.stream().filter(m -> onlineUsersModel.contains(m)).count();
+        JLabel onlineLabel = new JLabel("\u25cf En línea: " + onlineCount);
+        onlineLabel.setForeground(GREEN);
+        onlineLabel.setFont(new Font("Segoe UI", 0, 14));
+        onlineLabel.setAlignmentX(0.5f);
+        panel.add(onlineLabel);
+        panel.add(Box.createVerticalStrut(20));
+        
+        // Admin options
+        boolean isAdmin = owner.equals(this.userField.getText());
+        if (isAdmin) {
+            JPanel sep2 = new JPanel();
+            sep2.setBackground(BG_DARKEST);
+            sep2.setMaximumSize(new Dimension(340, 1));
+            sep2.setAlignmentX(0.5f);
+            panel.add(sep2);
+            panel.add(Box.createVerticalStrut(12));
+            
+            JLabel adminTitle = new JLabel("OPCIONES DE ADMINISTRADOR");
+            adminTitle.setForeground(new Color(142, 146, 151));
+            adminTitle.setFont(new Font("Segoe UI", 1, 11));
+            adminTitle.setAlignmentX(0.5f);
+            panel.add(adminTitle);
+            panel.add(Box.createVerticalStrut(10));
+            
+            JButton renameBtn = this.createStyledButton("Renombrar Servidor", BLURPLE);
+            renameBtn.setMaximumSize(new Dimension(220, 36));
+            renameBtn.setAlignmentX(0.5f);
+            renameBtn.addActionListener(e -> {
+                String newName = showCustomInputDialog("Renombrar", "Nuevo nombre del servidor:");
+                if (newName != null && !newName.trim().isEmpty()) {
+                    this.net.renameServer(serverName, newName.trim());
+                    dialog.dispose();
+                }
+            });
+            panel.add(renameBtn);
+            panel.add(Box.createVerticalStrut(8));
+            
+            JButton iconBtn = this.createStyledButton("Cambiar Icono", BG_DARKER);
+            iconBtn.setMaximumSize(new Dimension(220, 36));
+            iconBtn.setAlignmentX(0.5f);
+            iconBtn.addActionListener(e -> {
+                JOptionPane.showMessageDialog(dialog, "Funcionalidad de icono de servidor en desarrollo.", "Info", 1);
+            });
+            panel.add(iconBtn);
+        }
+        
+        dialog.add(panel);
+        dialog.setVisible(true);
     }
 
     @Override
@@ -1021,19 +1387,24 @@ implements NetworkListener {
     }
 
     @Override
-    public void onServerInfo(String string, String string2, List<String> list, List<String> list2, List<String> members) {
+    public void onServerInfo(String string, String string2, List<String> list, List<String> list2, Map<String, Integer> voiceLimits, List<String> members) {
         SwingUtilities.invokeLater(() -> {
-            Object object;
-            Object object22;
             this.currentServer = string;
             this.currentServerOwner = string2;
             this.channelsPanel.removeAll();
-            JLabel jLabel = new JLabel(string);
+            JLabel jLabel = new JLabel(string + " \u25BC");
             jLabel.setName("serverTitleLabel");
             jLabel.setForeground(Color.WHITE);
             jLabel.setFont(new Font("Segoe UI", 1, 16));
             jLabel.setAlignmentX(0.0f);
             jLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+            jLabel.setCursor(new Cursor(12));
+            jLabel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mousePressed(MouseEvent e) {
+                    showServerInfoDialog(string, string2, members);
+                }
+            });
             this.channelsPanel.add(jLabel);
             this.channelsPanel.add(Box.createVerticalStrut(20));
             boolean bl = string2.equals(this.userField.getText());
@@ -1052,7 +1423,7 @@ implements NetworkListener {
                 jButton.addActionListener(actionEvent -> {
                     String channelName = this.showCustomInputDialog("Nuevo Canal", "Nombre del canal de texto:");
                     if (channelName != null && !channelName.trim().isEmpty()) {
-                        this.net.addChannel(this.currentServer, "TEXT", channelName.trim().toLowerCase().replace(" ", "-"));
+                        this.net.addChannel(this.currentServer, "TEXT", channelName.trim());
                     }
                 });
                 jPanel.add((Component)jButton, "East");
@@ -1062,6 +1433,27 @@ implements NetworkListener {
             for (String stringChannel : list) {
                 JButton channelBtn = this.createChannelBtn("# " + stringChannel, true);
                 channelBtn.addActionListener(arg_0 -> this.handleTextChannelClick(channelBtn, stringChannel, arg_0));
+                if (bl) {
+                    channelBtn.addMouseListener(new MouseAdapter(){
+                        @Override
+                        public void mousePressed(MouseEvent e) { if (e.isPopupTrigger()) showMenu(e); }
+                        @Override
+                        public void mouseReleased(MouseEvent e) { if (e.isPopupTrigger()) showMenu(e); }
+                        private void showMenu(MouseEvent e) {
+                            JPopupMenu menu = new JPopupMenu();
+                            menu.setBackground(new Color(24, 25, 28));
+                            JMenuItem item = createMenuItem("Renombrar Canal", BLURPLE);
+                            item.addActionListener(ev -> {
+                                String newName = showCustomInputDialog("Renombrar", "Nuevo nombre:");
+                                if (newName != null && !newName.trim().isEmpty()) {
+                                    net.editChannel(currentServer, "TEXT", stringChannel, newName.trim(), 0);
+                                }
+                            });
+                            menu.add(item);
+                            menu.show(channelBtn, e.getX(), e.getY());
+                        }
+                    });
+                }
                 this.channelsPanel.add((Component)channelBtn);
                 if (!stringChannel.equals(this.currentTextChannel) && bl2) continue;
                 this.currentTextChannel = stringChannel;
@@ -1075,29 +1467,74 @@ implements NetworkListener {
             jPanel2.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
             jPanel2.add((Component)this.createCategoryLabel("CANALES DE VOZ"), "West");
             if (bl) {
-                object22 = new JButton("+");
-                ((JComponent)object22).setForeground(Color.WHITE);
-                ((AbstractButton)object22).setFocusPainted(false);
-                ((AbstractButton)object22).setContentAreaFilled(false);
-                ((AbstractButton)object22).setBorderPainted(false);
-                ((Component)object22).setCursor(new Cursor(12));
-                ((AbstractButton)object22).addActionListener(actionEvent -> {
+                JButton btnVoiceNew = new JButton("+");
+                btnVoiceNew.setForeground(Color.WHITE);
+                btnVoiceNew.setFocusPainted(false);
+                btnVoiceNew.setContentAreaFilled(false);
+                btnVoiceNew.setBorderPainted(false);
+                btnVoiceNew.setCursor(new Cursor(12));
+                btnVoiceNew.addActionListener(actionEvent -> {
                     String channelName = this.showCustomInputDialog("Nuevo Canal", "Nombre del canal de voz:");
                     if (channelName != null && !channelName.trim().isEmpty()) {
-                        this.net.addChannel(this.currentServer, "VOICE", channelName.trim().toLowerCase().replace(" ", "-"));
+                        this.net.addChannel(this.currentServer, "VOICE", channelName.trim());
                     }
                 });
-                jPanel2.add((Component)object22, "East");
+                jPanel2.add((Component)btnVoiceNew, "East");
             }
             this.channelsPanel.add(jPanel2);
-            this.voiceUsersPanel.removeAll();
+            voiceUsersPanels.clear();
+            voiceChannelBtns.clear();
+            currentVoiceLimits.clear();
+            
             java.util.Iterator<String> it = list2.iterator();
             while (it.hasNext()) {
                 String vcName = it.next();
-                JButton jButton = this.createChannelBtn("[Voz] " + vcName, false);
+                int limit = voiceLimits.getOrDefault(vcName, 0);
+                currentVoiceLimits.put(vcName, limit);
+                
+                DefaultListModel<String> curModel = voiceUsersMap.get(vcName);
+                int currentUse = curModel != null ? curModel.size() : 0;
+                
+                String display = limit > 0 ? "[Voz] " + vcName + " (" + currentUse + "/" + limit + ")" : "[Voz] " + vcName;
+                JButton jButton = this.createChannelBtn(display, false);
+                voiceChannelBtns.put(vcName, jButton);
+                
                 jButton.addActionListener(arg_0 -> this.handleVoiceChannelClick((String)vcName, arg_0));
+                if (bl) {
+                    jButton.addMouseListener(new MouseAdapter(){
+                        @Override
+                        public void mousePressed(MouseEvent e) { if (e.isPopupTrigger()) showMenu(e); }
+                        @Override
+                        public void mouseReleased(MouseEvent e) { if (e.isPopupTrigger()) showMenu(e); }
+                        private void showMenu(MouseEvent e) {
+                            JPopupMenu menu = new JPopupMenu();
+                            menu.setBackground(new Color(24, 25, 28));
+                            JMenuItem item = createMenuItem("Editar Canal", BLURPLE);
+                            item.addActionListener(ev -> {
+                                String newName = showCustomInputDialog("Renombrar", "Nuevo nombre (vacío = no cambiar):");
+                                String limitStr = showCustomInputDialog("Límite", "Límite de usuarios (0 = sin límite):");
+                                if (newName != null && limitStr != null) {
+                                    String finalName = newName.trim().isEmpty() ? vcName : newName.trim();
+                                    int finalLimit = 0;
+                                    try { finalLimit = Integer.parseInt(limitStr.trim()); } catch (Exception ex) {}
+                                    net.editChannel(currentServer, "VOICE", vcName, finalName, finalLimit);
+                                }
+                            });
+                            menu.add(item);
+                            menu.show(jButton, e.getX(), e.getY());
+                        }
+                    });
+                }
                 this.channelsPanel.add(jButton);
-                this.channelsPanel.add(this.voiceUsersPanel);
+                
+                JPanel vp = new JPanel();
+                vp.setLayout(new BoxLayout(vp, 1));
+                vp.setBackground(this.BG_DARKER);
+                vp.setBorder(new EmptyBorder(0, 20, 0, 0));
+                vp.setAlignmentX(0.0f);
+                voiceUsersPanels.put(vcName, vp);
+                this.channelsPanel.add(vp);
+                refreshVoiceUsersUI(vcName);
             }
             this.channelsPanel.add(Box.createVerticalGlue());
             this.channelsPanel.revalidate();
@@ -1114,7 +1551,7 @@ implements NetworkListener {
 
     private void showSettingsDialog() {
         JDialog jDialog = new JDialog(this, "Ajustes de Usuario", true);
-        jDialog.setSize(400, 300);
+        jDialog.setSize(400, 420);
         jDialog.setLocationRelativeTo(this);
         JPanel jPanel = new JPanel();
         jPanel.setLayout(new BoxLayout(jPanel, 1));
@@ -1128,7 +1565,7 @@ implements NetworkListener {
         jPanel.add(Box.createVerticalStrut(20));
         String string = this.userField.getText();
         String string2 = string == null || string.isEmpty() ? "?" : string.substring(0, 1).toUpperCase();
-        JLabel jLabel2 = new JLabel(new AvatarIcon(string == null ? "" : string, string2, this.BLURPLE));
+        JLabel jLabel2 = new JLabel(new AvatarIcon(string == null ? "" : string, string2, this.BLURPLE, GREEN));
         jLabel2.setAlignmentX(0.5f);
         jPanel.add(jLabel2);
         jPanel.add(Box.createVerticalStrut(10));
@@ -1137,7 +1574,31 @@ implements NetworkListener {
         jLabel3.setFont(new Font("Segoe UI", 0, 16));
         jLabel3.setAlignmentX(0.5f);
         jPanel.add(jLabel3);
-        jPanel.add(Box.createVerticalStrut(20));
+        jPanel.add(Box.createVerticalStrut(15));
+        
+        // Bio section
+        JLabel bioLabel = new JLabel("Descripci\u00f3n");
+        bioLabel.setForeground(new Color(142, 146, 151));
+        bioLabel.setFont(new Font("Segoe UI", 1, 12));
+        bioLabel.setAlignmentX(0.5f);
+        jPanel.add(bioLabel);
+        jPanel.add(Box.createVerticalStrut(5));
+        JTextField bioField = this.createStyledTextField(userBios.getOrDefault(string, ""));
+        bioField.setMaximumSize(new Dimension(300, 35));
+        bioField.setAlignmentX(0.5f);
+        jPanel.add(bioField);
+        jPanel.add(Box.createVerticalStrut(10));
+        JButton btnSaveBio = this.createStyledButton("Guardar Descripci\u00f3n", new Color(67, 181, 129));
+        btnSaveBio.setMaximumSize(new Dimension(200, 36));
+        btnSaveBio.setAlignmentX(0.5f);
+        btnSaveBio.addActionListener(e -> {
+            String bio = bioField.getText().trim();
+            this.net.setBio(bio);
+            userBios.put(string, bio);
+        });
+        jPanel.add(btnSaveBio);
+        jPanel.add(Box.createVerticalStrut(15));
+        
         JButton jButton = this.createStyledButton("Cambiar Avatar", this.BLURPLE);
         jButton.setMaximumSize(new Dimension(200, 40));
         jButton.setAlignmentX(0.5f);
@@ -1322,10 +1783,13 @@ implements NetworkListener {
         private String user;
         private String letter;
         private Color color;
-        public AvatarIcon(String string, String string2, Color color) {
+        private Color statusColor;
+        
+        public AvatarIcon(String string, String string2, Color color, Color statusColor) {
             this.user = string;
             this.letter = string2;
             this.color = color;
+            this.statusColor = statusColor;
         }
 
         @Override
@@ -1345,6 +1809,7 @@ implements NetworkListener {
             if (ChatWindow.this.customAvatars.containsKey(this.user)) {
                 graphics2D.setClip(new Ellipse2D.Float(n, n2, 36.0f, 36.0f));
                 graphics2D.drawImage(ChatWindow.this.customAvatars.get(this.user), n, n2, null);
+                graphics2D.setClip(null);
             } else {
                 graphics2D.setColor(this.color);
                 graphics2D.fillOval(n, n2, 36, 36);
@@ -1355,8 +1820,38 @@ implements NetworkListener {
                 int n4 = n2 + (36 - fontMetrics.getHeight()) / 2 + fontMetrics.getAscent();
                 graphics2D.drawString(this.letter, n3, n4);
             }
+            if (this.statusColor != null) {
+                graphics2D.setColor(ChatWindow.this.BG_DARKER);
+                graphics2D.fillOval(n + 24, n2 + 24, 12, 12);
+                graphics2D.setColor(this.statusColor);
+                graphics2D.fillOval(n + 26, n2 + 26, 8, 8);
+            }
             graphics2D.dispose();
         }
+    }
+    
+    private void playSound(String type) {
+        if ("DND".equals(this.myStatus) && "message".equals(type)) return;
+        Thread.ofVirtual().start(() -> {
+            try {
+                javax.sound.sampled.AudioFormat af = new javax.sound.sampled.AudioFormat(44100f, 16, 1, true, false);
+                javax.sound.sampled.SourceDataLine sdl = javax.sound.sampled.AudioSystem.getSourceDataLine(af);
+                sdl.open(af);
+                sdl.start();
+                byte[] buf = new byte[1];
+                int durationMs = "message".equals(type) ? 150 : 200;
+                double hz = "message".equals(type) ? 880.0 : ("join".equals(type) ? 1046.5 : 523.25);
+                double vol = 0.2;
+                for (int i = 0; i < durationMs * 44.1; i++) {
+                    double angle = i / (44100f / hz) * 2.0 * Math.PI;
+                    buf[0] = (byte)(Math.sin(angle) * 127.0 * vol);
+                    sdl.write(buf, 0, 1);
+                }
+                sdl.drain();
+                sdl.stop();
+                sdl.close();
+            } catch (Exception e) {}
+        });
     }
 }
 

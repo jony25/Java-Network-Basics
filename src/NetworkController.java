@@ -58,6 +58,22 @@ public class NetworkController {
         if (out != null) out.println("ADD_CHANNEL:" + server + ":" + type + ":" + name);
     }
     
+    public void editChannel(String server, String type, String oldName, String newName, int limit) {
+        if (out != null) out.println("EDIT_CHANNEL:" + server + ":" + type + ":" + oldName + ":" + newName + ":" + limit);
+    }
+    
+    public void setStatus(String status) {
+        if (out != null) out.println("SET_STATUS:" + status);
+    }
+    
+    public void setBio(String bio) {
+        if (out != null) out.println("SET_BIO:" + bio);
+    }
+    
+    public void getBio(String username) {
+        if (out != null) out.println("GET_BIO:" + username);
+    }
+    
     public void getServerInfo(String name) {
         if (out != null) out.println("GET_SERVER_INFO:" + name);
     }
@@ -102,7 +118,7 @@ public class NetworkController {
                 } else if (res.startsWith("PRESENCE:")) {
                     String[] parts = res.split(":", 3);
                     if (parts.length >= 3 && listener != null) {
-                        listener.onUserPresence(parts[2], parts[1].equals("ONLINE"));
+                        listener.onUserPresence(parts[2], parts[1]);
                     }
                 } else if (res.startsWith("VOICE_PRESENCE:")) {
                     String[] parts = res.split(":");
@@ -120,14 +136,25 @@ public class NetworkController {
                     }
                 } else if (res.startsWith("SERVER_INFO:")) {
                     if (listener != null) {
-                        String[] parts = res.split(":", 6);
-                        if (parts.length >= 6) {
+                        String[] parts = res.split(":", 7);
+                        if (parts.length >= 7) {
                             String name = parts[1];
                             String owner = parts[2];
                             java.util.List<String> textChannels = parts[3].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[3].split(","));
                             java.util.List<String> voiceChannels = parts[4].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[4].split(","));
-                            java.util.List<String> members = parts[5].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[5].split(","));
-                            listener.onServerInfo(name, owner, textChannels, voiceChannels, members);
+                            java.util.Map<String, Integer> voiceLimits = new java.util.HashMap<>();
+                            if (!parts[5].isEmpty()) {
+                                for (String lim : parts[5].split(",")) {
+                                    String[] kv = lim.split("=");
+                                    if (kv.length == 2) {
+                                        try {
+                                            voiceLimits.put(kv[0], Integer.parseInt(kv[1]));
+                                        } catch (NumberFormatException ignored) {}
+                                    }
+                                }
+                            }
+                            java.util.List<String> members = parts[6].isEmpty() ? new java.util.ArrayList<>() : java.util.Arrays.asList(parts[6].split(","));
+                            listener.onServerInfo(name, owner, textChannels, voiceChannels, voiceLimits, members);
                         }
                     }
                 } else if (res.startsWith("AVATAR:")) {
@@ -135,6 +162,13 @@ public class NetworkController {
                         String[] parts = res.split(":", 3);
                         if (parts.length >= 3) {
                             listener.onAvatarReceived(parts[1], parts[2]);
+                        }
+                    }
+                } else if (res.startsWith("BIO:")) {
+                    if (listener != null) {
+                        String[] parts = res.split(":", 3);
+                        if (parts.length >= 3) {
+                            listener.onBioReceived(parts[1], parts[2]);
                         }
                     }
                 } else if (res.startsWith("INVITE_CODE:")) {

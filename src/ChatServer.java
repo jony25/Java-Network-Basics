@@ -12,6 +12,7 @@ class ChatServer {
     private static final Map<String, ClientHandler> onlineUsers = new ConcurrentHashMap<>();
     private static final Map<String, ServerProfile> serverDb = new ConcurrentHashMap<>();
     private static final Map<String, String> avatarDb = new ConcurrentHashMap<>();
+    private static final Map<String, String> bioDb = new ConcurrentHashMap<>();
     private static final Map<String, String> inviteDb = new ConcurrentHashMap<>(); // code -> serverName
     private static DatagramSocket udpSocket;
 
@@ -21,6 +22,7 @@ class ChatServer {
         Set<String> members = ConcurrentHashMap.newKeySet();
         List<String> textChannels = new ArrayList<>();
         List<String> voiceChannels = new ArrayList<>();
+        Map<String, Integer> voiceLimits = new ConcurrentHashMap<>();
         
         public ServerProfile(String name, String owner) {
             this.name = name;
@@ -32,6 +34,7 @@ class ChatServer {
         loadUsers();
         loadServers();
         loadAvatars();
+        loadBios();
         new Thread(this::runUdpRelay).start();
 
         try (ServerSocket serverSocket = new ServerSocket(TCP_PORT)) {
@@ -109,6 +112,18 @@ class ChatServer {
                     String voiceLine = br.readLine();
                     if (voiceLine != null && !voiceLine.isEmpty()) sp.voiceChannels.addAll(Arrays.asList(voiceLine.split(",")));
                     
+                    String limitsLine = br.readLine();
+                    if (limitsLine != null && !limitsLine.isEmpty()) {
+                        for (String limitEntry : limitsLine.split(",")) {
+                            String[] parts = limitEntry.split("=");
+                            if (parts.length == 2) {
+                                try {
+                                    sp.voiceLimits.put(parts[0], Integer.parseInt(parts[1]));
+                                } catch (NumberFormatException ignored) {}
+                            }
+                        }
+                    }
+                    
                     serverDb.put(name, sp);
                 } catch (Exception e) {}
             }
@@ -126,6 +141,12 @@ class ChatServer {
             pw.println(String.join(",", sp.members));
             pw.println(String.join(",", sp.textChannels));
             pw.println(String.join(",", sp.voiceChannels));
+            
+            List<String> limits = new ArrayList<>();
+            for (Map.Entry<String, Integer> entry : sp.voiceLimits.entrySet()) {
+                limits.add(entry.getKey() + "=" + entry.getValue());
+            }
+            pw.println(String.join(",", limits));
         } catch (Exception e) {}
     }
 
@@ -143,6 +164,20 @@ class ChatServer {
         }
     }
 
+    private synchronized void loadBios() {
+        File dir = new File("bios");
+        if (!dir.exists()) dir.mkdir();
+        File[] files = dir.listFiles((d, name) -> name.endsWith(".txt"));
+        if (files != null) {
+            for (File f : files) {
+                try {
+                    String bio = new String(java.nio.file.Files.readAllBytes(f.toPath()));
+                    bioDb.put(f.getName().replace(".txt", ""), bio);
+                } catch (Exception e) {}
+            }
+        }
+    }
+
     private static class ClientHandler implements Runnable {
         private final Socket socket;
         private PrintWriter out;
@@ -154,6 +189,7 @@ class ChatServer {
         protected String currentTextChannel = null;
         protected String currentVoiceChannel = null;
         protected String username = null;
+        protected String status = "ONLINE";
 
         public ClientHandler(Socket socket) {
             this.socket = socket;
@@ -177,7 +213,7 @@ class ChatServer {
                         onlineUsers.put(this.username, this);
                         
                         // Notify others of login
-                        broadcastPresence("ONLINE", this.username);
+                        broadcastPresence(this.status, this.username);
                         // Send full state to joining user
                         sendInitialState(this);
                         
@@ -216,11 +252,28 @@ class ChatServer {
                 } else if (msgString.startsWith("JOIN_VOICE:")) {
                     String[] parts = msgString.split(":");
                     if (parts.length >= 3) {
+                        String srvName = parts[1];
+                        String vcName = parts[2];
+                        ServerProfile sp = serverDb.get(srvName);
+                        if (sp != null) {
+                            int limit = sp.voiceLimits.getOrDefault(vcName, 0);
+                            if (limit > 0) {
+                                int currentCount = 0;
+                                for (ClientHandler c : clients) {
+                                    if (srvName.equals(c.currentServer) && vcName.equals(c.currentVoiceChannel)) currentCount++;
+                                }
+                                if (currentCount >= limit) {
+                                    this.out.println("SYS:Error: El canal de voz '" + vcName + "' está lleno (" + limit + "/" + limit + ").");
+                                    continue;
+                                }
+                            }
+                        }
+                        
                         if (this.currentVoiceChannel != null) {
                             broadcastVoicePresence("LEAVE", this.currentVoiceChannel, user);
                         }
-                        this.currentServer = parts[1];
-                        this.currentVoiceChannel = parts[2];
+                        this.currentServer = srvName;
+                        this.currentVoiceChannel = vcName;
                         broadcastVoicePresence("JOIN", this.currentVoiceChannel, user);
                     }
                 } else if (msgString.startsWith("LEAVE_VOICE")) {
@@ -353,11 +406,73 @@ class ChatServer {
                             }
                         }
                     }
+                } else if (msgString.startsWith("EDIT_CHANNEL:")) {
+                    String[] parts = msgString.split(":", 6); // EDIT_CHANNEL:server:type:oldName:newName:limit
+                    if (parts.length >= 5) {
+                        String sName = parts[1];
+                        String type = parts[2];
+                        String oldName = parts[3];
+                        String newName = parts[4];
+                        String limitStr = parts.length >= 6 ? parts[5] : "0";
+                        ServerProfile sp = serverDb.get(sName);
+                        if (sp != null && sp.owner.equals(user)) {
+                            if (type.equals("TEXT")) {
+                                int idx = sp.textChannels.indexOf(oldName);
+                                if (idx != -1) {
+                                    sp.textChannels.set(idx, newName);
+                                    File histDir = new File("history");
+                                    if (histDir.exists()) {
+                                        File oldHist = new File(histDir, "history_" + sName + "_" + oldName + ".txt");
+                                        if (oldHist.exists()) oldHist.renameTo(new File(histDir, "history_" + sName + "_" + newName + ".txt"));
+                                    }
+                                }
+                            } else if (type.equals("VOICE")) {
+                                int idx = sp.voiceChannels.indexOf(oldName);
+                                if (idx != -1) {
+                                    sp.voiceChannels.set(idx, newName);
+                                    try {
+                                        int lim = Integer.parseInt(limitStr);
+                                        if (lim > 0) sp.voiceLimits.put(newName, lim);
+                                        else sp.voiceLimits.remove(newName);
+                                        if (!oldName.equals(newName)) sp.voiceLimits.remove(oldName); // cleanup old limit if name changed
+                                    } catch (NumberFormatException e) {}
+                                }
+                            }
+                            saveServer(sp);
+                            for (ClientHandler c : clients) {
+                                if (sp.members.contains(c.username)) sendServerInfo(c, sp);
+                                if (type.equals("TEXT") && sName.equals(c.currentServer) && oldName.equals(c.currentTextChannel)) c.currentTextChannel = newName;
+                                if (type.equals("VOICE") && sName.equals(c.currentServer) && oldName.equals(c.currentVoiceChannel)) c.currentVoiceChannel = newName;
+                            }
+                        }
+                    }
+                } else if (msgString.startsWith("SET_STATUS:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        this.status = parts[1];
+                        broadcastPresence(this.status, this.username);
+                    }
                 } else if (msgString.startsWith("GET_SERVER_INFO:")) {
                     String[] parts = msgString.split(":", 2);
                     if (parts.length >= 2) {
                         ServerProfile sp = serverDb.get(parts[1]);
                         if (sp != null) sendServerInfo(this, sp);
+                    }
+                } else if (msgString.startsWith("SET_BIO:")) {
+                    String[] parts = msgString.split(":", 2);
+                    if (parts.length >= 2) {
+                        String bio = parts[1];
+                        bioDb.put(user, bio);
+                        File dir = new File("bios");
+                        if (!dir.exists()) dir.mkdir();
+                        File f = new File(dir, user + ".txt");
+                        try (PrintWriter pw = new PrintWriter(new FileWriter(f))) {
+                            pw.print(bio);
+                        } catch (Exception e) {}
+                        
+                        for (ClientHandler c : clients) {
+                            c.out.println("BIO:" + user + ":" + bio);
+                        }
                     }
                 } else if (msgString.startsWith("AVATAR_UPLOAD:")) {
                     String[] parts = msgString.split(":", 2);
@@ -435,7 +550,12 @@ class ChatServer {
         private void sendServerInfo(ClientHandler target, ServerProfile sp) {
             String txts = String.join(",", sp.textChannels);
             String vcs = String.join(",", sp.voiceChannels);
-            target.out.println("SERVER_INFO:" + sp.name + ":" + sp.owner + ":" + txts + ":" + vcs + ":" + String.join(",", sp.members));
+            List<String> limits = new ArrayList<>();
+            for (Map.Entry<String, Integer> entry : sp.voiceLimits.entrySet()) {
+                limits.add(entry.getKey() + "=" + entry.getValue());
+            }
+            String limitsStr = String.join(",", limits);
+            target.out.println("SERVER_INFO:" + sp.name + ":" + sp.owner + ":" + txts + ":" + vcs + ":" + limitsStr + ":" + String.join(",", sp.members));
         }
         
         private void broadcastPresence(String status, String username) {
@@ -459,9 +579,13 @@ class ChatServer {
                 target.out.println("AVATAR:" + entry.getKey() + ":" + entry.getValue());
             }
             
+            for (Map.Entry<String, String> entry : bioDb.entrySet()) {
+                target.out.println("BIO:" + entry.getKey() + ":" + entry.getValue());
+            }
+            
             for (String user : onlineUsers.keySet()) {
-                target.out.println("PRESENCE:ONLINE:" + user);
                 ClientHandler other = onlineUsers.get(user);
+                target.out.println("PRESENCE:" + other.status + ":" + user);
                 if (other.currentVoiceChannel != null) {
                     target.out.println("VOICE_PRESENCE:JOIN:" + other.currentVoiceChannel + ":" + user);
                 }
